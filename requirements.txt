@@ -4,3 +4,4 @@ joblib>=1.4.0
 numpy>=1.26.0,<2.0.0
 scikit-learn>=1.6.0
 python-multipart>=0.0.20
+xgboost>=2.0.0
