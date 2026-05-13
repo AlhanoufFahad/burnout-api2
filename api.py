@@ -22,7 +22,7 @@ app.add_middleware(
 
 class UserInput(BaseModel):
     designation: int = Field(ge=0, le=5)
-    resource_allocation: int = Field(ge=1, le=100)
+    resource_allocation: int = Field(ge=0, le=100)
     mental_fatigue_score: int = Field(ge=4, le=20)
 
 class BurnoutResponse(BaseModel):
