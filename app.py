@@ -1,16 +1,24 @@
 from fastapi import FastAPI
 import joblib
 import numpy as np
+import traceback
 
 app = FastAPI()
 
-# تحميل المودل
-model = joblib.load("model.pkl")
-scaler = joblib.load("scaler.pkl")
+try:
+    model = joblib.load("model.pkl")
+    scaler = joblib.load("scaler.pkl")
+    print("Model loaded successfully")
+
+except Exception as e:
+    print("ERROR:")
+    traceback.print_exc()
+
 
 @app.get("/")
 def home():
-    return {"status": "API is running"}
+    return {"message": "API running successfully"}
+
 
 @app.post("/predict")
 def predict(data: dict):
@@ -19,15 +27,14 @@ def predict(data: dict):
     resource_allocation = data["resource_allocation"]
     mental_fatigue = data["mental_fatigue"]
 
-    # تجهيز البيانات
-    features = np.array([[designation,
-                          resource_allocation,
-                          mental_fatigue]])
+    features = np.array([
+        [designation, resource_allocation, mental_fatigue]
+    ])
 
-    # Scaling
     features_scaled = scaler.transform(features)
 
-    # Prediction
     prediction = model.predict(features_scaled)
 
-    return {"prediction": float(prediction[0])}
+    return {
+        "prediction": float(prediction[0])
+    }
