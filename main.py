@@ -1,237 +1,163 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
+import joblib
 import numpy as np
-import os
-import sys
-from pathlib import Path
-import pickle
+import pandas as pd
+from enum import Enum
 
+# Initialize FastAPI app
 app = FastAPI(
     title="Burnout Prediction API",
-    description="API for predicting employee burnout levels",
+    description="API for predicting employee burnout levels based on work-related factors",
     version="1.0.0"
 )
 
-# Try to import joblib, fallback to pickle if not available
+# Load models and scaler
 try:
-    import joblib
-    HAS_JOBLIB = True
-except ImportError:
-    HAS_JOBLIB = False
-    print("Warning: joblib not available, using pickle")
+    model = joblib.load("burnout_model.pkl")
+    scaler = joblib.load("scaler.pkl")
+    print("Models loaded successfully")
+except Exception as e:
+    print(f"Error loading models: {e}")
+    model = None
+    scaler = None
 
-# Global variables
-model = None
-scaler = None
+# Enums for validation
+class LikertScale(str, Enum):
+    STRONGLY_AGREE = "Strongly Agree"
+    AGREE = "Agree"
+    NEUTRAL = "Neutral"
+    DISAGREE = "Disagree"
+    STRONGLY_DISAGREE = "Strongly Disagree"
 
-# Fallback rule-based prediction (used if model files are missing)
-def rule_based_prediction(designation, resource_allocation, mental_fatigue_score):
-    """Fallback prediction using business rules"""
-    # Simple weighted scoring
-    score = (
-        designation * 0.3 +
-        resource_allocation * 0.2 +
-        mental_fatigue_score * 0.5
-    )
-    
-    # Normalize to 0-2 scale
-    if score < 3:
-        return 0  # Low
-    elif score < 6:
-        return 1  # Medium
-    else:
-        return 2  # High
+class BurnoutLevel(str, Enum):
+    LOW = "Low Burnout"
+    MEDIUM = "Medium Burnout"
+    HIGH = "High Burnout"
 
-def load_models():
-    """Load models with multiple fallback methods"""
-    global model, scaler
-    
-    # Try different methods to load the model
-    current_dir = Path(__file__).resolve().parent
-    
-    # Method 1: Using joblib
-    if HAS_JOBLIB:
-        try:
-            model_path = current_dir / "burnout_model.pkl"
-            if model_path.exists():
-                print(f"Loading model from {model_path}")
-                model = joblib.load(model_path)
-                print("Model loaded successfully with joblib")
-        except Exception as e:
-            print(f"Failed to load with joblib: {e}")
-    
-    # Method 2: Using pickle (if joblib failed)
-    if model is None:
-        try:
-            model_path = current_dir / "burnout_model.pkl"
-            if model_path.exists():
-                print(f"Loading model with pickle from {model_path}")
-                with open(model_path, 'rb') as f:
-                    model = pickle.load(f)
-                print("Model loaded successfully with pickle")
-        except Exception as e:
-            print(f"Failed to load with pickle: {e}")
-    
-    # Load scaler similarly
-    if HAS_JOBLIB:
-        try:
-            scaler_path = current_dir / "scaler.pkl"
-            if scaler_path.exists():
-                print(f"Loading scaler from {scaler_path}")
-                scaler = joblib.load(scaler_path)
-                print("Scaler loaded successfully with joblib")
-        except Exception as e:
-            print(f"Failed to load scaler with joblib: {e}")
-    
-    if scaler is None:
-        try:
-            scaler_path = current_dir / "scaler.pkl"
-            if scaler_path.exists():
-                print(f"Loading scaler with pickle from {scaler_path}")
-                with open(scaler_path, 'rb') as f:
-                    scaler = pickle.load(f)
-                print("Scaler loaded successfully with pickle")
-        except Exception as e:
-            print(f"Failed to load scaler with pickle: {e}")
-    
-    # If model still None, use rule-based fallback
-    if model is None:
-        print("WARNING: Using rule-based fallback prediction")
-        model = "rule_based"
-    
-    return model is not None or model == "rule_based"
-
-def predict_with_model(features):
-    """Make prediction using loaded model or fallback"""
-    global model, scaler
-    
-    if model == "rule_based":
-        # Use rule-based prediction
-        designation, resource_allocation, mental_fatigue = features[0]
-        prediction = rule_based_prediction(designation, resource_allocation, mental_fatigue)
-        
-        # Generate confidence scores for rule-based
-        confidence_scores = {
-            "Low Burnout": 0.7 if prediction == 0 else 0.2,
-            "Medium Burnout": 0.7 if prediction == 1 else 0.2,
-            "High Burnout": 0.7 if prediction == 2 else 0.2
-        }
-        return prediction, confidence_scores
-    
-    # Use actual ML model
-    try:
-        # Apply scaling if available
-        if scaler is not None:
-            features = scaler.transform(features)
-        
-        prediction = model.predict(features)[0]
-        
-        # Get confidence scores
-        confidence_scores = {}
-        if hasattr(model, 'predict_proba'):
-            probabilities = model.predict_proba(features)[0]
-            confidence_scores = {
-                "Low Burnout": float(probabilities[0]),
-                "Medium Burnout": float(probabilities[1]),
-                "High Burnout": float(probabilities[2]) if len(probabilities) > 2 else 0.0
-            }
-        else:
-            confidence_scores = {"confidence": 0.8}
-        
-        return prediction, confidence_scores
-    except Exception as e:
-        print(f"Model prediction error: {e}")
-        # Fallback to rule-based
-        designation, resource_allocation, mental_fatigue = features[0]
-        prediction = rule_based_prediction(designation, resource_allocation, mental_fatigue)
-        confidence_scores = {"confidence": 0.5, "note": "Using fallback prediction"}
-        return prediction, confidence_scores
-
-# Load models on startup
-@app.on_event("startup")
-async def startup_event():
-    success = load_models()
-    if success:
-        print("✅ Models loaded successfully!")
-    else:
-        print("⚠️ Running in fallback mode with rule-based predictions")
-
-# Request/Response Models
+# Request Models
 class BurnoutPredictionRequest(BaseModel):
+    designation: int = Field(..., ge=0, le=5, description="Designation level (0-5)")
+    resource_allocation: int = Field(..., ge=1, le=10, description="Resource allocation score (1-10)")
+    mental_fatigue_score: float = Field(..., ge=0, le=10, description="Mental fatigue score (0-10)")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "designation": 2,
+                "resource_allocation": 5,
+                "mental_fatigue_score": 4.5
+            }
+        }
+
+class MentalFatigueAnswers(BaseModel):
+    answers: List[LikertScale] = Field(..., min_length=4, max_length=4, description="4 Likert scale answers")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "answers": ["Strongly Agree", "Agree", "Neutral", "Agree"]
+            }
+        }
+
+class ChatbotRequest(BaseModel):
     designation: int = Field(..., ge=0, le=5)
     resource_allocation: int = Field(..., ge=1, le=10)
-    mental_fatigue_score: float = Field(..., ge=0, le=10)
+    answers: List[LikertScale] = Field(..., min_length=4, max_length=4)
 
+# Response Models
 class BurnoutPredictionResponse(BaseModel):
-    burnout_level: str
+    burnout_level: BurnoutLevel
     confidence_scores: Dict[str, float]
+    recommendation: str
+
+class MentalFatigueScoreResponse(BaseModel):
+    mental_fatigue_score: float
+    burnout_level: BurnoutLevel
     recommendation: str
 
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
-    model_type: str
     scaler_loaded: bool
 
 # Helper Functions
-def classify_burnout(score) -> str:
+def classify_burnout(score: float) -> BurnoutLevel:
+    """Classify burnout level based on predicted class"""
     if score == 0:
-        return "Low Burnout"
+        return BurnoutLevel.LOW
     elif score == 1:
-        return "Medium Burnout"
+        return BurnoutLevel.MEDIUM
     else:
-        return "High Burnout"
+        return BurnoutLevel.HIGH
 
-def get_recommendation(level: str) -> str:
+def get_recommendation(level: BurnoutLevel) -> str:
+    """Generate recommendation based on burnout level"""
     recommendations = {
-        "Low Burnout": "✅ Your stress level is low. Keep maintaining a healthy work-life balance.",
-        "Medium Burnout": "⚠️ You may be experiencing moderate burnout. Consider taking short breaks and managing workload.",
-        "High Burnout": "🚨 High burnout detected. We recommend rest, reducing workload, and seeking support if needed."
+        BurnoutLevel.LOW: "Your stress level is low. Keep maintaining a healthy work-life balance. Continue your current healthy habits and take regular breaks to prevent burnout.",
+        BurnoutLevel.MEDIUM: "You may be experiencing moderate burnout. Consider taking short breaks throughout the day, managing your workload better, practicing mindfulness, and speaking with your supervisor about workload concerns.",
+        BurnoutLevel.HIGH: "High burnout detected. We strongly recommend: taking time off work, reducing workload immediately, seeking professional support (counselor or therapist), practicing self-care activities, and discussing your situation with HR or management."
     }
     return recommendations.get(level, "Please consult with a healthcare professional.")
 
-# API Endpoints
-@app.get("/")
-async def root():
-    return {
-        "message": "Burnout Prediction API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health"
+def calculate_mental_fatigue_score(answers: List[str]) -> float:
+    """Calculate mental fatigue score from Likert scale answers"""
+    score_map = {
+        "Strongly Agree": 5,
+        "Agree": 4,
+        "Neutral": 3,
+        "Disagree": 2,
+        "Strongly Disagree": 1
     }
+    
+    total_score = sum(score_map[answer] for answer in answers)
+    # Convert to 0-10 scale (max score is 20, min is 4)
+    mental_fatigue_score = ((total_score - 4) / 16) * 10
+    return round(mental_fatigue_score, 2)
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
+def get_prediction_with_confidence(features: np.ndarray) -> tuple:
+    """Get prediction and confidence scores from model"""
+    if hasattr(model, 'predict_proba'):
+        probabilities = model.predict_proba(features)[0]
+        prediction = np.argmax(probabilities)
+        confidence_scores = {
+            "Low Burnout": float(probabilities[0]),
+            "Medium Burnout": float(probabilities[1]),
+            "High Burnout": float(probabilities[2]) if len(probabilities) > 2 else 0.0
+        }
+        return prediction, confidence_scores
+    else:
+        prediction = model.predict(features)[0]
+        return prediction, {}
+
+# API Endpoints
+@app.get("/", response_model=HealthResponse)
+async def root():
     """Health check endpoint"""
     return HealthResponse(
-        status="healthy" if model is not None else "degraded",
+        status="healthy",
         model_loaded=model is not None,
-        model_type=str(type(model).__name__) if model != "rule_based" else "rule_based_fallback",
         scaler_loaded=scaler is not None
     )
 
-@app.get("/debug")
-async def debug_info():
-    """Debug endpoint to diagnose issues"""
-    current_dir = Path(__file__).resolve().parent
-    files = list(current_dir.glob("*"))
-    
-    model_files = [f.name for f in files if f.suffix == '.pkl']
-    
-    return {
-        "current_directory": str(current_dir),
-        "available_model_files": model_files,
-        "joblib_available": HAS_JOBLIB,
-        "model_loaded": model is not None,
-        "model_type": str(type(model).__name__) if model != "rule_based" else "rule_based",
-        "scaler_loaded": scaler is not None,
-        "python_version": sys.version
-    }
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint for monitoring"""
+    return HealthResponse(
+        status="healthy",
+        model_loaded=model is not None,
+        scaler_loaded=scaler is not None
+    )
 
 @app.post("/predict", response_model=BurnoutPredictionResponse)
 async def predict_burnout(request: BurnoutPredictionRequest):
-    """Predict burnout level"""
+    """
+    Predict burnout level based on designation, resource allocation, and mental fatigue score
+    """
+    if model is None or scaler is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
     try:
         # Prepare input data
         input_data = np.array([[
@@ -240,8 +166,11 @@ async def predict_burnout(request: BurnoutPredictionRequest):
             request.mental_fatigue_score
         ]])
         
-        # Get prediction
-        prediction, confidence_scores = predict_with_model(input_data)
+        # Apply scaling
+        input_data_scaled = scaler.transform(input_data)
+        
+        # Get prediction and confidence
+        prediction, confidence_scores = get_prediction_with_confidence(input_data_scaled)
         
         # Get burnout level and recommendation
         burnout_level = classify_burnout(prediction)
@@ -254,27 +183,108 @@ async def predict_burnout(request: BurnoutPredictionRequest):
         )
         
     except Exception as e:
-        print(f"Prediction error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
-# Additional endpoints for convenience
-@app.post("/predict/batch")
-async def batch_predict(requests: List[BurnoutPredictionRequest]):
-    """Batch prediction"""
-    results = []
-    for req in requests:
-        input_data = np.array([[
-            req.designation,
-            req.resource_allocation,
-            req.mental_fatigue_score
-        ]])
-        prediction, confidence_scores = predict_with_model(input_data)
-        burnout_level = classify_burnout(prediction)
+@app.post("/mental-fatigue-score", response_model=MentalFatigueScoreResponse)
+async def calculate_mental_fatigue(answers: MentalFatigueAnswers):
+    """
+    Calculate mental fatigue score from Likert scale answers and predict burnout
+    """
+    try:
+        # Calculate mental fatigue score
+        mental_fatigue_score = calculate_mental_fatigue_score(answers.answers)
         
-        results.append({
-            "input": req.dict(),
-            "burnout_level": burnout_level,
-            "recommendation": get_recommendation(burnout_level)
-        })
+        # Use default values for other features (since this endpoint only uses mental fatigue)
+        # In a real scenario, you'd collect designation and resource allocation too
+        request = BurnoutPredictionRequest(
+            designation=2,  # Default value
+            resource_allocation=5,  # Default value
+            mental_fatigue_score=mental_fatigue_score
+        )
+        
+        # Get burnout prediction
+        result = await predict_burnout(request)
+        
+        return MentalFatigueScoreResponse(
+            mental_fatigue_score=mental_fatigue_score,
+            burnout_level=result.burnout_level,
+            recommendation=result.recommendation
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Calculation error: {str(e)}")
+
+@app.post("/chatbot-predict", response_model=MentalFatigueScoreResponse)
+async def chatbot_predict(request: ChatbotRequest):
+    """
+    Complete chatbot prediction endpoint that takes all inputs and returns burnout level
+    """
+    try:
+        # Calculate mental fatigue score from answers
+        mental_fatigue_score = calculate_mental_fatigue_score(request.answers)
+        
+        # Prepare prediction request
+        prediction_request = BurnoutPredictionRequest(
+            designation=request.designation,
+            resource_allocation=request.resource_allocation,
+            mental_fatigue_score=mental_fatigue_score
+        )
+        
+        # Get burnout prediction
+        result = await predict_burnout(prediction_request)
+        
+        return MentalFatigueScoreResponse(
+            mental_fatigue_score=mental_fatigue_score,
+            burnout_level=result.burnout_level,
+            recommendation=result.recommendation
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
+@app.post("/batch-predict")
+async def batch_predict(requests: List[BurnoutPredictionRequest]):
+    """
+    Batch prediction for multiple employees
+    """
+    if model is None or scaler is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
-    return {"predictions": results, "total": len(results)}
+    try:
+        results = []
+        for req in requests:
+            input_data = np.array([[
+                req.designation,
+                req.resource_allocation,
+                req.mental_fatigue_score
+            ]])
+            
+            input_data_scaled = scaler.transform(input_data)
+            prediction, confidence_scores = get_prediction_with_confidence(input_data_scaled)
+            burnout_level = classify_burnout(prediction)
+            
+            results.append({
+                "input": req.dict(),
+                "burnout_level": burnout_level.value,
+                "confidence_scores": confidence_scores,
+                "recommendation": get_recommendation(burnout_level)
+            })
+        
+        return {"predictions": results, "total": len(results)}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch prediction error: {str(e)}")
+
+@app.get("/model-info")
+async def model_info():
+    """Get information about the loaded model"""
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    
+    return {
+        "model_type": type(model).__name__,
+        "model_loaded": True,
+        "scaler_loaded": scaler is not None,
+        "features": ["Designation", "Resource Allocation", "Mental Fatigue Score"],
+        "burnout_levels": ["Low Burnout", "Medium Burnout", "High Burnout"]
+    }
