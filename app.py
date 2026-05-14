@@ -21,7 +21,7 @@ model = None
 scaler = None
 
 try:
-    model = joblib.load("burnout_model.pkl")
+    model = joblib.load("model.pkl")
     scaler = joblib.load("scaler.pkl")
     print("✅ Model and Scaler loaded successfully!")
 except Exception as e:
