@@ -1,173 +1,106 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+import joblib
 import numpy as np
+from flask import Flask, request, jsonify
 import os
-import sys
-import warnings
-warnings.filterwarnings('ignore')
 
-app = FastAPI(title="Burnout Prediction AI API")
+# Initialize Flask application
+app = Flask(__name__)
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Define the paths to your model and scaler files
+# Ensure these files ('burnout_model_fixed.pkl' and 'scaler_fixed.pkl')
+# are present in the same directory as your Flask app when deploying to Render.
+MODEL_PATH = "burnout_model_fixed.pkl"
+SCALER_PATH = "scaler_fixed.pkl"
 
-# Global variables
 model = None
 scaler = None
 
-# Force numpy compatibility
-import numpy as np
-np.__version__ = '1.24.3'
+try:
+    # Load the pre-trained model and scaler
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
+    print(f"✅ Model loaded from {MODEL_PATH}")
+    print(f"✅ Scaler loaded from {SCALER_PATH}")
+except FileNotFoundError:
+    print(f"Error: Model or scaler files not found. Expected: {MODEL_PATH}, {SCALER_PATH}")
+    print("Please ensure these files are in the deployment directory.")
+except Exception as e:
+    print(f"Error loading model or scaler: {e}")
 
-# Load model with compatibility fixes
-def load_models():
-    global model, scaler
-    
-    try:
-        import joblib
-        import pickle
-        
-        # Set environment for compatibility
-        os.environ['XGBOOST_LOADER'] = 'pickle'
-        
-        # Load model
-        if os.path.exists("burnout_model.pkl"):
-            try:
-                # Try joblib first
-                model = joblib.load("burnout_model.pkl")
-                print("✅ Model loaded with joblib")
-            except Exception as e:
-                print(f"Joblib failed: {e}")
-                # Try pickle
-                with open("burnout_model.pkl", "rb") as f:
-                    model = pickle.load(f)
-                print("✅ Model loaded with pickle")
-        
-        # Load scaler
-        if os.path.exists("scaler.pkl"):
-            try:
-                scaler = joblib.load("scaler.pkl")
-                print("✅ Scaler loaded with joblib")
-            except:
-                with open("scaler.pkl", "rb") as f:
-                    scaler = pickle.load(f)
-                print("✅ Scaler loaded with pickle")
-        
-        # Test the model
-        if model is not None:
-            test_input = np.array([[2, 5, 4.5]]).astype(np.float32)
-            test_pred = model.predict(test_input)
-            print(f"✅ Model test successful: {test_pred[0]}")
-            
-    except Exception as e:
-        print(f"❌ Error loading models: {e}")
-        import traceback
-        traceback.print_exc()
+# Re-define the predict_burnout function (from cell 5M3tG2JTcRQg in your notebook)
+def predict_burnout(designation, resource_allocation, mental_fatigue):
+    global model, scaler # Access the globally loaded model and scaler
 
-# Load models on startup
-@app.on_event("startup")
-async def startup_event():
-    load_models()
-    print(f"Files in directory: {os.listdir('.')}")
-    print(f"Model loaded: {model is not None}")
-    print(f"Scaler loaded: {scaler is not None}")
+    if model is None or scaler is None:
+        return "Model not loaded. Cannot predict."
 
-# Request model
-class PredictRequest(BaseModel):
-    designation: int = Field(ge=0, le=5, description="Designation level (0-5)")
-    resource_allocation: int = Field(ge=1, le=10, description="Resource allocation (1-10)")
-    mental_fatigue_score: float = Field(ge=0, le=10, description="Mental fatigue score (0-10)")
+    # Rule-based cases as defined in your notebook
+    if mental_fatigue <= 4:
+        return "Low Burnout"
+    elif mental_fatigue >= 17:
+        return "High Burnout"
+    else:
+        # Raw input array should match the 3 features ('Designation', 'Resource Allocation', 'Mental Fatigue Score')
+        # that your model was trained on.
+        input_data = np.array([[designation, resource_allocation, mental_fatigue]], dtype=np.float32)
 
-# Response model
-class PredictResponse(BaseModel):
-    burnout_level: str
-    recommendation: str
-    confidence: float = None
+        # Apply scaling using the loaded scaler
+        # Note: The scaler was fitted on the training data's numerical columns.
+        scaled_input = scaler.transform(input_data)
 
-def get_recommendation(level):
-    recommendations = {
-        "Low Burnout": "✅ You're doing great! Keep maintaining work-life balance and take regular breaks.",
-        "Medium Burnout": "⚠️ You may be experiencing moderate burnout. Consider taking short breaks, delegating tasks, and practicing mindfulness.",
-        "High Burnout": "🔥 High burnout detected. We strongly recommend taking time off, reducing workload, and seeking professional support."
-    }
-    return recommendations.get(level, "Please consult a professional.")
+        # Make prediction with the loaded model
+        prediction = model.predict(scaled_input)[0]
 
-@app.get("/")
-async def root():
-    return {
-        "message": "Burnout Prediction AI API", 
-        "status": "running",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None
-    }
-
-@app.get("/health")
-async def health():
-    return {
-        "status": "healthy" if model is not None else "degraded",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None,
-        "model_type": "XGBoost" if model is not None else "None"
-    }
-
-@app.post("/predict", response_model=PredictResponse)
-async def predict(request: PredictRequest):
-    if model is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="AI Model not loaded. Please try again later."
-        )
-    
-    try:
-        # Prepare input as float32 for XGBoost
-        input_data = np.array([[
-            float(request.designation),
-            float(request.resource_allocation),
-            float(request.mental_fatigue_score)
-        ]], dtype=np.float32)
-        
-        # Apply scaling if scaler is available
-        if scaler is not None:
-            input_scaled = scaler.transform(input_data)
+        # Convert numerical prediction to burnout level string
+        if prediction == 0:
+            return "Low Burnout"
+        elif prediction == 1:
+            return "Medium Burnout"
         else:
-            input_scaled = input_data
-        
-        # Get prediction
-        prediction = model.predict(input_scaled)[0]
-        
-        # Get confidence if available
-        confidence = None
-        if hasattr(model, 'predict_proba'):
-            probs = model.predict_proba(input_scaled)[0]
-            confidence = float(max(probs) * 100)
-        
-        # Convert to level
-        level_map = {0: "Low Burnout", 1: "Medium Burnout", 2: "High Burnout"}
-        burnout_level = level_map.get(prediction, "Medium Burnout")
-        
-        return PredictResponse(
-            burnout_level=burnout_level,
-            recommendation=get_recommendation(burnout_level),
-            confidence=confidence
-        )
-        
-    except Exception as e:
-        print(f"Prediction error details: {e}")
-        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+            return "High Burnout"
 
-@app.post("/debug-predict")
-async def debug_predict(request: PredictRequest):
-    """Debug endpoint to see what's happening"""
-    return {
-        "input": request.dict(),
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None,
-        "message": "Check server logs for details"
-    }
+# Re-define the burnout_recommendation function (from cell SlwjTI1seJk- in your notebook)
+def burnout_recommendation(burnout_level_str):
+    if burnout_level_str == "Low Burnout":
+        return "Your stress level is low. Keep maintaining a healthy work-life balance."
+    elif burnout_level_str == "Medium Burnout":
+        return "You may be experiencing moderate burnout. Consider taking short breaks and managing workload."
+    elif burnout_level_str == "High Burnout":
+        return "High burnout detected. We recommend rest, reducing workload, and seeking support if needed."
+    else:
+        return "No specific recommendation available for this burnout level."
+
+@app.route('/predict', methods=['POST'])
+def predict_api():
+    if model is None or scaler is None:
+        return jsonify({"error": "Model or scaler not loaded. Please check server logs."}), 500
+
+    data = request.get_json(force=True)
+
+    # Extract input features from the request JSON
+    try:
+        designation = float(data['designation'])
+        resource_allocation = float(data['resource_allocation'])
+        mental_fatigue = float(data['mental_fatigue'])
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({"error": f"Invalid input data: {e}. Expected 'designation', 'resource_allocation', and 'mental_fatigue' as numbers."}), 400
+
+    # Get burnout prediction
+    burnout_level = predict_burnout(designation, resource_allocation, mental_fatigue)
+
+    # Get recommendation based on the burnout level
+    recommendation = burnout_recommendation(burnout_level)
+
+    return jsonify({
+        "burnout_level": burnout_level,
+        "recommendation": recommendation
+    })
+
+
+# To run this API locally for testing:
+# if __name__ == '__main__':
+#     app.run(debug=True, host='0.0.0.0', port=os.environ.get('PORT', 5000))
+
+# For deployment on platforms like Render, a WSGI server (e.g., Gunicorn)
+# will typically be used to run the 'app' object. You usually don't run app.run() directly
+# in the deployed environment.
