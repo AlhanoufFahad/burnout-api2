@@ -19,24 +19,17 @@ app.add_middleware(
 
 # Global variables
 model = None
-scaler = None
 
-# Load models on startup
+# Load model only (skip scaler for now)
 @app.on_event("startup")
 async def startup_event():
-    global model, scaler
+    global model
     
-    # Get the directory where this file is located
     current_dir = Path(__file__).parent
-    
-    # Paths to model files
     model_path = current_dir / "burnout_model.pkl"
-    scaler_path = current_dir / "scaler.pkl"
     
     print(f"Looking for model at: {model_path}")
-    print(f"Looking for scaler at: {scaler_path}")
     
-    # Check if files exist
     if model_path.exists():
         try:
             model = joblib.load(model_path)
@@ -46,16 +39,7 @@ async def startup_event():
     else:
         print(f"❌ Model file not found at {model_path}")
     
-    if scaler_path.exists():
-        try:
-            scaler = joblib.load(scaler_path)
-            print("✅ Scaler loaded successfully!")
-        except Exception as e:
-            print(f"❌ Error loading scaler: {e}")
-    else:
-        print(f"❌ Scaler file not found at {scaler_path}")
-    
-    # List all files in directory for debugging
+    # List files for debugging
     print("\n📁 Files in current directory:")
     for file in current_dir.iterdir():
         print(f"   - {file.name}")
@@ -84,39 +68,31 @@ async def root():
     return {
         "message": "Burnout Detection API is running!",
         "status": "active",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None
+        "model_loaded": model is not None
     }
 
 @app.get("/health")
 async def health_check():
     return {
-        "status": "healthy" if model and scaler else "degraded",
-        "model_loaded": model is not None,
-        "scaler_loaded": scaler is not None
+        "status": "healthy" if model else "degraded",
+        "model_loaded": model is not None
     }
 
 @app.post("/predict", response_model=BurnoutResponse)
 async def predict_burnout(input_data: UserInput):
-    if model is None or scaler is None:
-        raise HTTPException(
-            status_code=503, 
-            detail=f"Models not loaded. Model: {model is not None}, Scaler: {scaler is not None}"
-        )
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
-        # Prepare input
+        # Prepare input (no scaling needed - the model expects raw values)
         raw_input = np.array([[
             input_data.designation,
             input_data.resource_allocation,
             input_data.mental_fatigue_score
         ]])
         
-        # Scale the input
-        scaled_input = scaler.transform(raw_input)
-        
-        # Make prediction
-        prediction = model.predict(scaled_input)[0]
+        # Make prediction directly
+        prediction = model.predict(raw_input)[0]
         
         level_map = {0: "Low Burnout", 1: "Medium Burnout", 2: "High Burnout"}
         
