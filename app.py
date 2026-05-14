@@ -19,22 +19,27 @@ except Exception as e:
 def home():
     return {"message": "API running successfully"}
 
-
 @app.post("/predict")
 def predict(data: dict):
 
-    designation = data["designation"]
-    resource_allocation = data["resource_allocation"]
-    mental_fatigue = data["mental_fatigue"]
+    try:
+        designation = float(data["designation"])
+        resource_allocation = float(data["resource_allocation"])
+        mental_fatigue = float(data["mental_fatigue"])
 
-    features = np.array([
-        [designation, resource_allocation, mental_fatigue]
-    ])
+        features = np.array([
+            [designation, resource_allocation, mental_fatigue]
+        ])
 
-    features_scaled = scaler.transform(features)
+        features_scaled = scaler.transform(features)
 
-    prediction = model.predict(features_scaled)
+        prediction = model.predict(features_scaled)
 
-    return {
-        "prediction": float(prediction[0])
-    }
+        return {
+            "prediction": float(prediction[0])
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e)
+        }
