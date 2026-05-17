@@ -37,7 +37,7 @@ class UserInput(BaseModel):
 
     resource_allocation: int = Field(..., ge=0, le=100)
 
-    mental_fatigue_score: int = Field(..., ge=0, le=20)
+    mental_fatigue_score: int = Field(..., ge=4, le=20)
 
 # =========================
 # Output schema
