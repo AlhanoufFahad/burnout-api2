@@ -35,7 +35,7 @@ class UserInput(BaseModel):
 
     designation: int = Field(..., ge=0, le=5)
 
-    resource_allocation: int = Field(..., ge=0, le=10)
+    resource_allocation: int = Field(..., ge=0, le=100)
 
     mental_fatigue_score: int = Field(..., ge=0, le=20)
 
